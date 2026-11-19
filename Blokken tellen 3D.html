@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Blokken tellen 3D</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#fbf6ec;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#1d3557;touch-action:none;-webkit-user-select:none;user-select:none}
+  #c{position:fixed;inset:0;display:block;width:100%;height:100%}
+  .top{position:fixed;top:0;left:0;right:0;padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;pointer-events:none}
+  .top>*{pointer-events:auto}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap}
+  button{font:inherit;font-weight:700;border:2px solid #2f6fb5;background:#fff;color:#2f6fb5;border-radius:12px;padding:9px 12px;font-size:15px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  button.on{background:#2f6fb5;color:#fff}
+  button:active{transform:scale(.96)}
+  .count{background:#fff;border:2px solid #2f6fb5;border-radius:14px;padding:4px 14px;text-align:center;min-width:70px}
+  .count b{font-size:30px;line-height:1.1;display:block}
+  .count small{font-size:12px;font-weight:600;color:#5a7ca8}
+  .count{cursor:help}
+  .count b#n{display:none}
+  .count .q{font-size:30px;line-height:1.1;display:block;font-weight:800;color:#9bb5d6}
+  .count:hover b#n,.count.show b#n{display:block}
+  .count:hover .q,.count.show .q{display:none}
+  .bottom{position:fixed;left:0;right:0;bottom:0;padding:8px 10px calc(10px + env(safe-area-inset-bottom));display:flex;flex-wrap:wrap;gap:6px;justify-content:center;pointer-events:none}
+  .bottom>*{pointer-events:auto}
+  .hint{position:fixed;left:0;right:0;text-align:center;font-size:12px;color:#5a7ca8;pointer-events:none;padding:0 10px}
+  .msg{position:fixed;left:50%;top:76px;transform:translateX(-50%);background:#e63946;color:#fff;padding:8px 14px;border-radius:12px;font-weight:700;display:none;text-align:center;max-width:88vw}
+  .big{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);font-size:110px;font-weight:900;color:#2f6fb5;opacity:0;pointer-events:none;transition:opacity .25s;text-shadow:0 4px 0 #fff}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="top">
+  <div class="tabs">
+    <button data-fig="1">Figuur 1</button>
+    <button data-fig="2">Figuur 2</button>
+    <button data-fig="3">Figuur 3</button>
+    <button data-fig="4">Figuur 4</button>
+  </div>
+  <div class="count" id="cnt" title="Zet je muis hier om het antwoord te zien"><span class="q">?</span><b id="n">0</b><small>blokken</small></div>
+</div>
+
+<div class="msg" id="msg"></div>
+<div class="big" id="big"></div>
+
+<div class="hint" id="hint">1 vinger: draaien · 2 vingers: schuiven &amp; zoomen · tik: blok zetten</div>
+<div class="bottom" id="bar">
+  <button id="bAdd" class="on">🧱 Zetten</button>
+  <button id="bDel">✖ Weghalen</button>
+  <button id="bX">👻 Doorkijken</button>
+  <button id="bCount">🔢 Tel samen</button>
+  <button id="bUndo">↶ Terug</button>
+  <button id="bView">🎥 Werkblad</button>
+  <button id="bClear">🗑 Leeg</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- figuren van het werkblad ----------
+// x = kolom (links→rechts), y = hoogte, z = diepte (0 = achter, 1 = voor)
+function cols(heights, x0){ const out=[]; heights.forEach((h,i)=>{ for(let y=0;y<h;y++) out.push([x0+i,y,0]); }); return out; }
+const FIGS = {
+  1: cols([2,3], -1),
+  2: cols([2,1,3], -1),
+  3: [...cols([2,1,3], -1), [1,0,1]],   // + 1 blok vóór, en daarachter zit een verstopt blok
+  4: [ [-1,0,1],[0,0,1],[1,0,1],          // voorste rij: 3 op de grond
+       [-1,0,0],[0,0,0],[1,0,0],          // achterste rij grond (de middelste is verstopt!)
+       [0,1,0],[0,2,0],[1,1,0] ],         // toren achter
+};
+
+// ---------- scene ----------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xfbf6ec);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.12;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 3;
+controls.maxDistance = 40;
+controls.screenSpacePanning = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd8cfc0, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-4, 12, 7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left:-10, right:10, top:10, bottom:-10, near:1, far:40 });
+sun.shadow.radius = 4;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity:0.18 }));
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(13, 13, 0xc9bda8, 0xe2d8c6);
+grid.position.set(0.5, 0.001, 0.5);  // lijnen tussen de vakjes
+scene.add(grid);
+// onzichtbare vloer om op te tikken
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(13, 13), new THREE.MeshBasicMaterial({ visible:false }));
+floor.rotation.x = -Math.PI/2;
+floor.position.set(0, 0, 0);
+scene.add(floor);
+
+// ---------- blokken ----------
+const BLUE = new THREE.Color(0x7fb2e2), RED = new THREE.Color(0xef6b73), YELLOW = new THREE.Color(0xffd166);
+const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const edgeGeo = new THREE.EdgesGeometry(boxGeo);
+const LIMIT = 6, MAXY = 9;
+const blocks = new Map(); // "x,y,z" -> mesh
+const key = (x,y,z) => `${x},${y},${z}`;
+let xray = false;
+
+function makeBlock(x,y,z){
+  const mat = new THREE.MeshLambertMaterial({ color: BLUE.clone() });
+  const m = new THREE.Mesh(boxGeo, mat);
+  m.position.set(x, y + 0.5, z);
+  m.castShadow = true; m.receiveShadow = true;
+  const e = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color:0x2f6fb5 }));
+  e.scale.setScalar(1.002);
+  m.add(e);
+  m.userData.cell = [x,y,z];
+  applyXray(m);
+  return m;
+}
+function applyXray(m){
+  m.material.transparent = xray;
+  m.material.opacity = xray ? 0.28 : 1;
+  m.material.depthWrite = !xray;
+  m.castShadow = !xray;
+  m.material.needsUpdate = true;
+}
+function addBlock(x,y,z){
+  const k = key(x,y,z);
+  if (blocks.has(k)) return false;
+  if (Math.abs(x) > LIMIT || Math.abs(z) > LIMIT || y < 0 || y > MAXY) return false;
+  const m = makeBlock(x,y,z);
+  blocks.set(k, m); scene.add(m);
+  return true;
+}
+function removeBlock(k){
+  const m = blocks.get(k); if (!m) return;
+  scene.remove(m); m.material.dispose(); blocks.delete(k);
+}
+function setBlocks(list){
+  for (const k of [...blocks.keys()]) removeBlock(k);
+  list.forEach(([x,y,z]) => addBlock(x,y,z));
+  refresh();
+}
+const snapshot = () => [...blocks.values()].map(m => m.userData.cell.slice());
+
+// ---------- zweven controleren ----------
+function refresh(){
+  clearLabels();
+  const memo = new Map();
+  const supported = (x,y,z) => {
+    const k = key(x,y,z);
+    if (memo.has(k)) return memo.get(k);
+    const r = y === 0 || (blocks.has(key(x,y-1,z)) && supported(x,y-1,z));
+    memo.set(k, r); return r;
+  };
+  let floating = 0;
+  for (const m of blocks.values()){
+    const ok = supported(...m.userData.cell);
+    m.material.color.copy(ok ? BLUE : RED);
+    if (!ok) floating++;
+  }
+  document.getElementById('n').textContent = blocks.size;
+  const msg = document.getElementById('msg');
+  if (floating){ msg.textContent = `${floating === 1 ? 'Dit blok zweeft' : 'Deze blokken zweven'}! Er moet een blok onder.`; msg.style.display='block'; }
+  else msg.style.display='none';
+}
+
+// ---------- labels / samen tellen ----------
+const labels = [];
+function labelSprite(text){
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.beginPath(); g.arc(64,64,56,0,Math.PI*2); g.fill();
+  g.lineWidth = 8; g.strokeStyle = '#2f6fb5'; g.stroke();
+  g.fillStyle = '#1d3557'; g.font = 'bold 68px system-ui, sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  g.fillText(text, 64, 68);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map:t, depthTest:false, transparent:true }));
+  s.scale.set(0.55, 0.55, 1); s.renderOrder = 999;
+  return s;
+}
+function clearLabels(){
+  counting && stopCount();
+  labels.forEach(s => { scene.remove(s); s.material.map.dispose(); s.material.dispose(); });
+  labels.length = 0;
+}
+let counting = null;
+function stopCount(){ clearTimeout(counting); counting = null; }
+function countTogether(){
+  clearLabels();
+  if (!xray) toggleXray(true);
+  const order = [...blocks.values()].sort((a,b) => {
+    const [ax,ay,az] = a.userData.cell, [bx,by,bz] = b.userData.cell;
+    return ay-by || az-bz || ax-bx;
+  });
+  let i = 0;
+  const big = document.getElementById('big');
+  const step = () => {
+    if (i > 0) order[i-1].material.color.copy(BLUE);
+    if (i >= order.length){
+      big.textContent = order.length; big.style.opacity = 1;
+      counting = setTimeout(() => { big.style.opacity = 0; counting = null; }, 1500);
+      return;
+    }
+    const m = order[i];
+    m.material.color.copy(YELLOW);
+    const s = labelSprite(String(i+1)); s.position.copy(m.position); scene.add(s); labels.push(s);
+    big.textContent = i+1; big.style.opacity = 0.9;
+    i++;
+    counting = setTimeout(step, 800);
+  };
+  step();
+}
+
+// ---------- knoppen ----------
+let mode = 'add';
+const $ = id => document.getElementById(id);
+const undo = [];
+function pushUndo(){ undo.push(snapshot()); if (undo.length > 100) undo.shift(); }
+function setMode(m){ mode = m; $('bAdd').classList.toggle('on', m==='add'); $('bDel').classList.toggle('on', m==='del');
+  $('hint').innerHTML = `1 vinger: draaien · 2 vingers: schuiven &amp; zoomen · tik: ${m==='add'?'blok zetten':'blok weghalen'}`; ghost.visible=false; }
+function toggleXray(v){ xray = v ?? !xray; $('bX').classList.toggle('on', xray); blocks.forEach(applyXray); }
+$('cnt').addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') $('cnt').classList.toggle('show'); });
+$('bAdd').onclick = () => setMode('add');
+$('bDel').onclick = () => setMode('del');
+$('bX').onclick = () => toggleXray();
+$('bCount').onclick = () => countTogether();
+$('bUndo').onclick = () => { if (undo.length) setBlocks(undo.pop()); };
+$('bView').onclick = () => worksheetView();
+$('bClear').onclick = () => { pushUndo(); setBlocks([]); };
+let currentFig = 1;
+document.querySelectorAll('[data-fig]').forEach(b => b.onclick = () => loadFig(+b.dataset.fig));
+function loadFig(n){
+  currentFig = n;
+  document.querySelectorAll('[data-fig]').forEach(b => b.classList.toggle('on', +b.dataset.fig === n));
+  pushUndo(); setBlocks(FIGS[n]); toggleXray(false); worksheetView();
+}
+function centerOf(){
+  if (!blocks.size) return new THREE.Vector3(0,0.5,0);
+  const box = new THREE.Box3(); blocks.forEach(m => box.expandByObject(m));
+  return box.getCenter(new THREE.Vector3());
+}
+function worksheetView(){
+  const c = centerOf();
+  // zoals op het werkblad: van voren, een beetje rechts en van boven
+  const aspect = camera.aspect;
+  const d = aspect < 0.8 ? 1.55 : 1;
+  controls.target.copy(c);
+  camera.position.set(c.x + 4.5*d, c.y + 5*d, c.z + 9*d);
+  controls.update();
+}
+
+// ---------- tikken / klikken ----------
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
+const ghost = new THREE.Mesh(boxGeo, new THREE.MeshBasicMaterial({ color:0x2f6fb5, transparent:true, opacity:0.25, depthWrite:false }));
+ghost.add(new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color:0x2f6fb5, transparent:true, opacity:0.6 })));
+ghost.visible = false; scene.add(ghost);
+
+function pick(clientX, clientY){
+  const r = canvas.getBoundingClientRect();
+  ptr.set(((clientX - r.left)/r.width)*2 - 1, -((clientY - r.top)/r.height)*2 + 1);
+  ray.setFromCamera(ptr, camera);
+  const hits = ray.intersectObjects([...blocks.values(), floor], false);
+  if (!hits.length) return null;
+  const h = hits[0];
+  if (h.object === floor){
+    const x = Math.round(h.point.x), z = Math.round(h.point.z);
+    return { add:[x,0,z], del:null };
+  }
+  const [x,y,z] = h.object.userData.cell;
+  const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+  return { add:[x+Math.round(n.x), y+Math.round(n.y), z+Math.round(n.z)], del:key(x,y,z) };
+}
+
+const pointers = new Map();
+let down = null, multi = false;
+canvas.addEventListener('pointerdown', e => {
+  pointers.set(e.pointerId, e);
+  if (pointers.size > 1) multi = true;
+  if (pointers.size === 1){ multi = false; down = { x:e.clientX, y:e.clientY, t:performance.now(), b:e.button }; }
+});
+canvas.addEventListener('pointerup', e => {
+  pointers.delete(e.pointerId);
+  if (!down || multi || down.b !== 0) { if (!pointers.size) down = null; return; }
+  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+  const dt = performance.now() - down.t;
+  down = null;
+  if (moved > 8 || dt > 600) return;
+  const p = pick(e.clientX, e.clientY); if (!p) return;
+  if (mode === 'add'){
+    const [x,y,z] = p.add;
+    if (!blocks.has(key(x,y,z)) && y >= 0){ pushUndo(); if (addBlock(x,y,z)) refresh(); else undo.pop(); }
+  } else if (p.del){
+    pushUndo(); removeBlock(p.del); refresh();
+  }
+  updateGhost(e);
+});
+canvas.addEventListener('pointercancel', e => { pointers.delete(e.pointerId); down = null; });
+canvas.addEventListener('pointerleave', () => { ghost.visible = false; });
+canvas.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' && !e.buttons) updateGhost(e); });
+let hovered = null;
+function updateGhost(e){
+  if (hovered){ hovered.material.emissive.setHex(0); hovered = null; }
+  ghost.visible = false;
+  if (e.pointerType !== 'mouse') return;
+  const p = pick(e.clientX, e.clientY); if (!p) return;
+  if (mode === 'add'){
+    const [x,y,z] = p.add;
+    if (y >= 0 && !blocks.has(key(x,y,z)) && Math.abs(x) <= LIMIT && Math.abs(z) <= LIMIT){ ghost.position.set(x, y+0.5, z); ghost.visible = true; }
+  } else if (p.del){
+    hovered = blocks.get(p.del); hovered.material.emissive.setHex(0x661111);
+  }
+}
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- loop ----------
+function resize(){
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  const bar = $('bar').getBoundingClientRect();
+  $('hint').style.bottom = (h - bar.top + 4) + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+loadFig(4); undo.length = 0;
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
